@@ -734,6 +734,21 @@ function isToolBlock(part: Record<string, unknown>): boolean {
 }
 
 /**
+ * Unconditionally strips ALL thinking/reasoning blocks from a content array.
+ * Used for Claude models to avoid signature validation errors entirely.
+ * Claude will generate fresh thinking for each turn.
+ */
+function stripAllThinkingBlocks(contentArray: any[]): any[] {
+  return contentArray.filter(item => {
+    if (!item || typeof item !== "object") return true;
+    if (isToolBlock(item)) return true;
+    if (isThinkingPart(item)) return false;
+    if (hasSignatureField(item)) return false;
+    return true;
+  });
+}
+
+/**
  * Removes trailing thinking blocks from a content array.
  * Claude API requires that assistant messages don't end with thinking blocks.
  * Only removes unsigned thinking blocks; preserves those with valid signatures.
@@ -903,7 +918,12 @@ function filterContentArray(
   contentArray: any[],
   sessionId?: string,
   getCachedSignatureFn?: (sessionId: string, text: string) => string | undefined,
+  isClaudeModel?: boolean,
 ): any[] {
+  if (isClaudeModel) {
+    return stripAllThinkingBlocks(contentArray);
+  }
+
   const filtered: any[] = [];
 
   for (const item of contentArray) {
@@ -963,39 +983,38 @@ export function filterUnsignedThinkingBlocks(
   contents: any[],
   sessionId?: string,
   getCachedSignatureFn?: (sessionId: string, text: string) => string | undefined,
+  isClaudeModel?: boolean,
 ): any[] {
   return contents.map((content: any) => {
     if (!content || typeof content !== "object") {
       return content;
     }
 
-    // Gemini format: contents[].parts[]
     if (Array.isArray((content as any).parts)) {
       const filteredParts = filterContentArray(
         (content as any).parts,
         sessionId,
         getCachedSignatureFn,
+        isClaudeModel,
       );
 
-      // Remove trailing thinking blocks for model role (assistant equivalent in Gemini)
-      const trimmedParts = (content as any).role === "model"
+      const trimmedParts = (content as any).role === "model" && !isClaudeModel
         ? removeTrailingThinkingBlocks(filteredParts, sessionId, getCachedSignatureFn)
         : filteredParts;
 
       return { ...content, parts: trimmedParts };
     }
 
-    // Some Anthropic-style payloads may appear here as contents[].content[]
     if (Array.isArray((content as any).content)) {
       const isAssistantRole = (content as any).role === "assistant";
       const filteredContent = filterContentArray(
         (content as any).content,
         sessionId,
         getCachedSignatureFn,
+        isClaudeModel,
       );
 
-      // Claude API requires assistant messages don't end with thinking blocks
-      const trimmedContent = isAssistantRole
+      const trimmedContent = isAssistantRole && !isClaudeModel
         ? removeTrailingThinkingBlocks(filteredContent, sessionId, getCachedSignatureFn)
         : filteredContent;
 
@@ -1013,6 +1032,7 @@ export function filterMessagesThinkingBlocks(
   messages: any[],
   sessionId?: string,
   getCachedSignatureFn?: (sessionId: string, text: string) => string | undefined,
+  isClaudeModel?: boolean,
 ): any[] {
   return messages.map((message: any) => {
     if (!message || typeof message !== "object") {
@@ -1025,10 +1045,10 @@ export function filterMessagesThinkingBlocks(
         (message as any).content,
         sessionId,
         getCachedSignatureFn,
+        isClaudeModel,
       );
 
-      // Claude API requires assistant messages don't end with thinking blocks
-      const trimmedContent = isAssistantRole
+      const trimmedContent = isAssistantRole && !isClaudeModel
         ? removeTrailingThinkingBlocks(filteredContent, sessionId, getCachedSignatureFn)
         : filteredContent;
 
@@ -1043,6 +1063,7 @@ export function deepFilterThinkingBlocks(
   payload: unknown,
   sessionId?: string,
   getCachedSignatureFn?: (sessionId: string, text: string) => string | undefined,
+  isClaudeModel?: boolean,
 ): unknown {
   const visited = new WeakSet<object>();
 
@@ -1069,6 +1090,7 @@ export function deepFilterThinkingBlocks(
         obj.contents as any[],
         sessionId,
         getCachedSignatureFn,
+        isClaudeModel,
       );
     }
 
@@ -1077,6 +1099,7 @@ export function deepFilterThinkingBlocks(
         obj.messages as any[],
         sessionId,
         getCachedSignatureFn,
+        isClaudeModel,
       );
     }
 

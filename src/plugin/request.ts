@@ -832,7 +832,7 @@ export function prepareAntigravityRequest(
               (req as any).messages = ensureThinkingBeforeToolUseInMessages((req as any).messages, signatureSessionKey);
             }
 
-            deepFilterThinkingBlocks(req, signatureSessionKey, getCachedSignature);
+            deepFilterThinkingBlocks(req, signatureSessionKey, getCachedSignature, true);
           }
         }
 
@@ -1189,7 +1189,7 @@ export function prepareAntigravityRequest(
             requestPayload.messages = ensureThinkingBeforeToolUseInMessages(requestPayload.messages, signatureSessionKey);
           }
 
-          deepFilterThinkingBlocks(requestPayload, signatureSessionKey, getCachedSignature);
+          deepFilterThinkingBlocks(requestPayload, signatureSessionKey, getCachedSignature, true);
 
           if (isClaudeThinkingModel) {
             const hasToolUse =
