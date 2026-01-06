@@ -68,6 +68,17 @@ const PLUGIN_SESSION_ID = `-${crypto.randomUUID()}`;
 
 const MIN_SIGNATURE_LENGTH = 50;
 
+const displayedThinkingHashesBySession = new Map<string, Set<string>>();
+
+function getDisplayedThinkingHashes(sessionKey: string): Set<string> {
+  let hashes = displayedThinkingHashesBySession.get(sessionKey);
+  if (!hashes) {
+    hashes = new Set<string>();
+    displayedThinkingHashesBySession.set(sessionKey, hashes);
+  }
+  return hashes;
+}
+
 function buildSignatureSessionKey(
   sessionId: string,
   model?: string,
@@ -1057,7 +1068,25 @@ export function prepareAntigravityRequest(
                 newTool.input_schema,
                 newTool.inputSchema,
               ].filter(Boolean);
-              const schema = schemaCandidates[0];
+
+              const placeholderSchema = {
+                type: "object",
+                properties: {
+                  [EMPTY_SCHEMA_PLACEHOLDER_NAME]: {
+                    type: "boolean",
+                    description: EMPTY_SCHEMA_PLACEHOLDER_DESCRIPTION,
+                  },
+                },
+                required: [EMPTY_SCHEMA_PLACEHOLDER_NAME],
+                additionalProperties: false,
+              };
+
+              let schema: any = schemaCandidates[0];
+              const schemaObjectOk = schema && typeof schema === "object" && !Array.isArray(schema);
+              if (!schemaObjectOk) {
+                schema = placeholderSchema;
+                toolDebugMissing += 1;
+              }
 
               const nameCandidate =
                 newTool.name ||
@@ -1075,18 +1104,22 @@ export function prepareAntigravityRequest(
                 newTool.custom = {
                   name: newTool.function.name || nameCandidate,
                   description: newTool.function.description,
-                  input_schema: schema ?? { type: "object", properties: {}, additionalProperties: false },
+                  input_schema: schema,
                 };
               }
               if (!newTool.custom && !newTool.function) {
                 newTool.custom = {
                   name: nameCandidate,
                   description: newTool.description,
-                  input_schema: schema ?? { type: "object", properties: {}, additionalProperties: false },
+                  input_schema: schema,
                 };
+
+                if (!newTool.parameters && !newTool.input_schema && !newTool.inputSchema) {
+                  newTool.parameters = schema;
+                }
               }
               if (newTool.custom && !newTool.custom.input_schema) {
-                newTool.custom.input_schema = { type: "object", properties: {}, additionalProperties: false };
+                newTool.custom.input_schema = schema;
                 toolDebugMissing += 1;
               }
 
@@ -1451,6 +1484,7 @@ export async function transformAntigravityResponse(
         signatureSessionKey: sessionId,
         debugText,
         cacheSignatures,
+        displayedThinkingHashes: sessionId ? getDisplayedThinkingHashes(sessionId) : undefined,
       },
     );
     return new Response(response.body.pipeThrough(streamingTransformer), {

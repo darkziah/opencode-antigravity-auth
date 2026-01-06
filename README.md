@@ -59,8 +59,7 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
               "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
               "variants": {
                 "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-                "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
-                "high": { "thinkingConfig": { "thinkingBudget": 32768 } }
+                "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
               }
             }
          }
@@ -72,7 +71,7 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
 4. **Use it:**
 
    ```bash
-   opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=medium
+   opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=max
    ```
 
 <details>
@@ -129,7 +128,6 @@ Create `~/.config/opencode/opencode.json`:
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -139,7 +137,6 @@ Create `~/.config/opencode/opencode.json`:
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -172,7 +169,7 @@ Create `~/.config/opencode/opencode.json`:
 ### Verification
 
 ```bash
-opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=medium
+opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=max
 ```
 
 </details>
@@ -188,16 +185,16 @@ Models with `antigravity-` prefix use Antigravity quota. **Thinking models suppo
 | `google/antigravity-gemini-3-pro` | low, high | Gemini 3 Pro with configurable thinking |
 | `google/antigravity-gemini-3-flash` | minimal, low, medium, high | Gemini 3 Flash with configurable thinking |
 | `google/antigravity-claude-sonnet-4-5` | - | Claude Sonnet 4.5 (no thinking) |
-| `google/antigravity-claude-sonnet-4-5-thinking` | low, medium, max | Claude Sonnet with configurable thinking |
-| `google/antigravity-claude-opus-4-5-thinking` | low, medium, max | Claude Opus with configurable thinking |
+| `google/antigravity-claude-sonnet-4-5-thinking` | low, max | Claude Sonnet with configurable thinking |
+| `google/antigravity-claude-opus-4-5-thinking` | low, max | Claude Opus with configurable thinking |
 
 **Variant configuration:**
 - **Gemini 3**: Uses `thinkingLevel` string (`"low"`, `"medium"`, `"high"`)
-- **Claude**: Uses `thinkingBudget` number (8192, 16384, 32768 tokens)
+- **Claude**: Uses `thinkingBudget` number (8192, 32768 tokens)
 
 **Usage:**
 ```bash
-opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=high
+opencode run "Hello" --model=google/antigravity-claude-sonnet-4-5-thinking --variant=max
 ```
 
 ### Gemini CLI Quota
@@ -252,7 +249,6 @@ Models with `-preview` suffix use Gemini CLI quota:
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -262,7 +258,6 @@ Models with `-preview` suffix use Gemini CLI quota:
           "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
           "variants": {
             "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-            "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
             "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
           }
         },
@@ -312,7 +307,6 @@ When you define a model with `variants`, OpenCode will show variant options in t
     "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
     "variants": {
       "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-      "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
       "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
     }
   }
@@ -335,10 +329,10 @@ Gemini 3 models use string-based thinking levels. Available levels differ by mod
 
 | Level | Flash | Pro | Description |
 |-------|-------|-----|-------------|
-| `minimal` | Yes | No | Minimal thinking, lowest latency (Flash default) |
+| `minimal` | Yes | No | Minimal thinking, lowest latency |
 | `low` | Yes | Yes | Light thinking |
 | `medium` | Yes | No | Balanced thinking |
-| `high` | Yes | Yes | Maximum thinking (Pro default) |
+| `high` | Yes | Yes | Maximum thinking (default for both Pro and Flash) |
 
 > **Note:** The API will reject invalid levels (e.g., `"minimal"` on Pro). Configure variants accordingly.
 
@@ -457,6 +451,7 @@ Create `~/.config/opencode/antigravity.json` (or `.opencode/antigravity.json` in
 | Option | Default | Description |
 |--------|---------|-------------|
 | `account_selection_strategy` | `"sticky"` | Strategy for distributing requests across accounts |
+| `pid_offset_enabled` | `false` | Use PID-based offset for multi-session distribution |
 
 **Available strategies:**
 
@@ -483,6 +478,7 @@ OPENCODE_ANTIGRAVITY_DEBUG=1                              # debug
 OPENCODE_ANTIGRAVITY_LOG_DIR=/path                        # log_dir
 OPENCODE_ANTIGRAVITY_KEEP_THINKING=1                      # keep_thinking
 OPENCODE_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY=round-robin  # account_selection_strategy
+OPENCODE_ANTIGRAVITY_PID_OFFSET_ENABLED=1                 # pid_offset_enabled
 ```
 
 <details>
@@ -509,6 +505,7 @@ OPENCODE_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY=round-robin  # account_selection
   "max_rate_limit_wait_seconds": 300,
   "quota_fallback": false,
   "account_selection_strategy": "sticky",
+  "pid_offset_enabled": false,
   "signature_cache": {
     "enabled": true,
     "memory_ttl_seconds": 3600,
@@ -537,7 +534,7 @@ DCP creates synthetic assistant messages that lack thinking blocks. **Our plugin
 
 ### oh-my-opencode
 
-When spawning parallel subagents, multiple processes may select the same account causing rate limit errors. **Workaround:** Add more accounts via `opencode auth login`.
+When spawning parallel subagents, multiple processes may select the same account causing rate limit errors. **Workaround:** Enable `pid_offset_enabled: true` to distribute sessions across accounts, or add more accounts via `opencode auth login`.
 
 ### Plugins You Don't Need
 
@@ -570,7 +567,6 @@ v1.2.8+ introduces **model variants** for dynamic thinking configuration. Instea
     "modalities": { "input": ["text", "image", "pdf"], "output": ["text"] },
     "variants": {
       "low": { "thinkingConfig": { "thinkingBudget": 8192 } },
-      "medium": { "thinkingConfig": { "thinkingBudget": 16384 } },
       "max": { "thinkingConfig": { "thinkingBudget": 32768 } }
     }
   }
@@ -580,7 +576,7 @@ v1.2.8+ introduces **model variants** for dynamic thinking configuration. Instea
 ### Benefits
 
 - **Cleaner model picker** - 4 models instead of 12+
-- **Flexible budgets** - Define any budget, not just low/medium/high
+- **Flexible budgets** - Define any budget, not just low/max
 - **Future-proof** - Works with OpenCode's native variant system
 
 ### Backward Compatibility

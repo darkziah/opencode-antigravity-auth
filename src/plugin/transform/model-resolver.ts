@@ -190,16 +190,27 @@ export function resolveModelWithTier(requestedModel: string): ResolvedModel {
 
   // Check if this is a Gemini 3 model (works for both aliased and skipAlias paths)
   const isEffectiveGemini3 = resolvedModel.toLowerCase().includes("gemini-3");
-  const isFlash = resolvedModel.toLowerCase().includes("flash");
+  const isClaudeThinking = resolvedModel.toLowerCase().includes("claude") && resolvedModel.toLowerCase().includes("thinking");
 
   if (!tier) {
     // Gemini 3 models without explicit tier get a default thinkingLevel
     if (isEffectiveGemini3) {
-      // Flash defaults to "minimal", Pro defaults to "high" (per Google's API docs)
-      const defaultLevel = isFlash ? "minimal" : "high";
+      // Both Pro and Flash default to "high" per Google's API docs:
+      // "This is the default level for Gemini 3 Pro and Gemini 3 Flash"
       return {
         actualModel: resolvedModel,
-        thinkingLevel: defaultLevel,
+        thinkingLevel: "high",
+        isThinkingModel: true,
+        quotaPreference,
+        explicitQuota,
+      };
+    }
+    // Claude thinking models without explicit tier get max budget (32768)
+    // Per Anthropic docs, budget_tokens is required when enabling extended thinking
+    if (isClaudeThinking) {
+      return {
+        actualModel: resolvedModel,
+        thinkingBudget: THINKING_TIER_BUDGETS.claude.high,
         isThinkingModel: true,
         quotaPreference,
         explicitQuota,

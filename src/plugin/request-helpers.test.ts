@@ -22,7 +22,9 @@ import {
   injectToolHardeningInstruction,
   cleanJSONSchemaForAntigravity,
   createSyntheticErrorResponse,
+  recursivelyParseJsonStrings,
 } from "./request-helpers";
+import { deduplicateThinkingText, createThoughtBuffer } from "./core/streaming/transformer";
 
 describe("sanitizeThinkingPart (covered via filtering)", () => {
   it("extracts wrapped text and strips SDK fields for Gemini-style thought blocks", () => {
@@ -1592,5 +1594,229 @@ describe("extractVariantThinkingConfig", () => {
     expect(extractVariantThinkingConfig({
       google: { thinkingConfig: { thinkingBudget: "high" } },
     })).toBeUndefined();
+  });
+});
+
+describe("deduplicateThinkingText", () => {
+  function createTestBuffer() {
+    return createThoughtBuffer();
+  }
+
+  it("returns non-object input unchanged", () => {
+    const buffer = createTestBuffer();
+    expect(deduplicateThinkingText(null, buffer)).toBeNull();
+    expect(deduplicateThinkingText(undefined, buffer)).toBeUndefined();
+    expect(deduplicateThinkingText("string", buffer)).toBe("string");
+  });
+
+  it("extracts delta from accumulated Gemini thinking text", () => {
+    const buffer = createTestBuffer();
+    
+    const chunk1 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Hello " }],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result1 = deduplicateThinkingText(chunk1, buffer) as any;
+    expect(result1.candidates[0].content.parts[0].text).toBe("Hello ");
+    
+    const chunk2 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Hello world" }],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result2 = deduplicateThinkingText(chunk2, buffer) as any;
+    expect(result2.candidates[0].content.parts[0].text).toBe("world");
+  });
+
+  it("filters out empty delta parts", () => {
+    const buffer = createTestBuffer();
+    
+    const chunk1 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Complete thought" }],
+        },
+      }],
+    };
+    deduplicateThinkingText(chunk1, buffer);
+    
+    const chunk2 = {
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: "Complete thought" },
+            { text: "Regular text" },
+          ],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result2 = deduplicateThinkingText(chunk2, buffer) as any;
+    expect(result2.candidates[0].content.parts).toHaveLength(1);
+    expect(result2.candidates[0].content.parts[0].text).toBe("Regular text");
+  });
+
+  it("extracts delta from accumulated Claude thinking blocks", () => {
+    const buffer = createTestBuffer();
+    
+    const chunk1 = {
+      content: [{ type: "thinking", thinking: "First " }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result1 = deduplicateThinkingText(chunk1, buffer) as any;
+    expect(result1.content[0].thinking).toBe("First ");
+    
+    const chunk2 = {
+      content: [{ type: "thinking", thinking: "First part" }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result2 = deduplicateThinkingText(chunk2, buffer) as any;
+    expect(result2.content[0].thinking).toBe("part");
+  });
+
+  it("handles new thinking content that does not start with sent text", () => {
+    const buffer = createTestBuffer();
+    
+    const chunk1 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Old thought" }],
+        },
+      }],
+    };
+    deduplicateThinkingText(chunk1, buffer);
+    
+    const chunk2 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "New thought" }],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result2 = deduplicateThinkingText(chunk2, buffer) as any;
+    expect(result2.candidates[0].content.parts[0].text).toBe("New thought");
+  });
+
+  it("preserves non-thinking parts unchanged", () => {
+    const buffer = createTestBuffer();
+    
+    const chunk = {
+      candidates: [{
+        content: {
+          parts: [
+            { thought: true, text: "Thinking" },
+            { text: "Regular text" },
+            { functionCall: { name: "test" } },
+          ],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = deduplicateThinkingText(chunk, buffer) as any;
+    expect(result.candidates[0].content.parts[1].text).toBe("Regular text");
+    expect(result.candidates[0].content.parts[2].functionCall.name).toBe("test");
+  });
+
+  it("skips already-displayed thinking when displayedHashes is provided", () => {
+    const buffer = createTestBuffer();
+    const displayedHashes = new Set<string>();
+    
+    const chunk1 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Same thinking content" }],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result1 = deduplicateThinkingText(chunk1, buffer, displayedHashes) as any;
+    expect(result1.candidates[0].content.parts[0].text).toBe("Same thinking content");
+    expect(displayedHashes.size).toBe(1);
+    
+    const buffer2 = createTestBuffer();
+    const chunk2 = {
+      candidates: [{
+        content: {
+          parts: [{ thought: true, text: "Same thinking content" }],
+        },
+      }],
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result2 = deduplicateThinkingText(chunk2, buffer2, displayedHashes) as any;
+    expect(result2.candidates[0].content.parts.length).toBe(0);
+  });
+});
+
+describe("recursivelyParseJsonStrings", () => {
+  it("parses JSON strings in non-protected keys", () => {
+    const input = { metadata: '{"key": "value"}' };
+    const result = recursivelyParseJsonStrings(input);
+    expect(result).toEqual({ metadata: { key: "value" } });
+  });
+
+  it("preserves oldString/newString even when they contain valid JSON", () => {
+    const input = {
+      oldString: '{"name": "test"}',
+      newString: '{"name": "updated"}',
+    };
+    const result = recursivelyParseJsonStrings(input);
+    expect(result).toEqual({
+      oldString: '{"name": "test"}',
+      newString: '{"name": "updated"}',
+    });
+  });
+
+  it("preserves content parameter even when it contains valid JSON", () => {
+    const input = {
+      content: '{"dependencies": {"lodash": "^4.0.0"}}',
+      filePath: "/path/to/package.json",
+    };
+    const result = recursivelyParseJsonStrings(input);
+    expect(result).toEqual({
+      content: '{"dependencies": {"lodash": "^4.0.0"}}',
+      filePath: "/path/to/package.json",
+    });
+  });
+
+  it("parses JSON in non-protected keys", () => {
+    const input = {
+      metadata: '{"version": 1}',
+      oldString: '{"should": "stay"}',
+    };
+    const result = recursivelyParseJsonStrings(input);
+    expect(result).toEqual({
+      metadata: { version: 1 },
+      oldString: '{"should": "stay"}',
+    });
+  });
+
+  it("handles nested objects with protected keys", () => {
+    const input = {
+      tool: {
+        name: "edit",
+        args: {
+          oldString: '["item1", "item2"]',
+          newString: '["item1", "item2", "item3"]',
+        },
+      },
+    };
+    const result = recursivelyParseJsonStrings(input);
+    expect(result).toEqual({
+      tool: {
+        name: "edit",
+        args: {
+          oldString: '["item1", "item2"]',
+          newString: '["item1", "item2", "item3"]',
+        },
+      },
+    });
   });
 });
