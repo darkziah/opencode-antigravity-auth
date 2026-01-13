@@ -1185,6 +1185,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Flag to force thinking recovery on retry after API error
             let forceThinkingRecovery = false;
             
+            // Track if token was consumed (for priority-queue refund on error)
+            let tokenConsumed = false;
+            
             for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
               const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
 
@@ -1227,6 +1230,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 // Refunded later if request fails (429 or network error)
                 if (config.account_selection_strategy === 'priority-queue') {
                   getTokenTracker().consume(account.index);
+                  tokenConsumed = true;
                 }
 
                 const response = await fetch(prepared.request, prepared.init);
@@ -1238,8 +1242,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 // Handle 429 rate limit with improved logic
                 if (response.status === 429) {
                   // Refund token on rate limit
-                  if (config.account_selection_strategy === 'priority-queue') {
+                  if (tokenConsumed) {
                     getTokenTracker().refund(account.index);
+                    tokenConsumed = false;
                   }
 
                   const headerRetryMs = retryAfterMsFromResponse(response);
@@ -1534,9 +1539,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 return transformedResponse;
               } catch (error) {
-                // Refund token on network/API error
-                if (config.account_selection_strategy === 'priority-queue') {
+                // Refund token on network/API error (only if consumed)
+                if (tokenConsumed) {
                   getTokenTracker().refund(account.index);
+                  tokenConsumed = false;
                 }
 
                 // Handle recoverable thinking errors - retry with forced recovery

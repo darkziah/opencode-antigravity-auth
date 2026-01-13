@@ -338,6 +338,7 @@ export class AccountManager {
       }
     }
 
+    // Fallback: sticky selection (used when priority-queue/hybrid find no candidates)
     // PID-based offset for multi-session distribution (opt-in)
     // Different sessions (PIDs) will prefer different starting accounts
     if (pidOffsetEnabled && !this.sessionOffsetApplied[family] && this.accounts.length > 1) {
