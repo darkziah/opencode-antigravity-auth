@@ -32,13 +32,14 @@ import { EmptyResponseError } from "./plugin/errors";
 import { AntigravityTokenRefreshError, refreshAccessToken } from "./plugin/token";
 import { startOAuthListener, type OAuthListener } from "./plugin/server";
 import { clearAccounts, loadAccounts, saveAccounts } from "./plugin/storage";
-import { AccountManager, type ModelFamily } from "./plugin/accounts";
+import { AccountManager, type ModelFamily, parseRateLimitReason, calculateBackoffMs } from "./plugin/accounts";
 import { createAutoUpdateCheckerHook } from "./hooks/auto-update-checker";
-import { loadConfig, type AntigravityConfig } from "./plugin/config";
+import { loadConfig, initRuntimeConfig, type AntigravityConfig } from "./plugin/config";
 import { createSessionRecoveryHook, getRecoverySuccessToast } from "./plugin/recovery";
 import { initDiskSignatureCache } from "./plugin/cache";
 import { createProactiveRefreshQueue, type ProactiveRefreshQueue } from "./plugin/refresh-queue";
 import { initLogger, createLogger } from "./plugin/logger";
+import { initHealthTracker, getHealthTracker, initTokenTracker, getTokenTracker } from "./plugin/rotation";
 import type {
   GetAuth,
   LoaderResult,
@@ -655,12 +656,35 @@ export const createAntigravityPlugin = (providerId: string) => async (
 ): Promise<PluginResult> => {
   // Load configuration from files and environment variables
   const config = loadConfig(directory);
+  initRuntimeConfig(config);
   
   // Initialize debug with config
   initializeDebug(config);
   
   // Initialize structured logger for TUI integration
   initLogger(client);
+  
+  // Initialize health tracker for hybrid strategy
+  if (config.health_score) {
+    initHealthTracker({
+      initial: config.health_score.initial,
+      successReward: config.health_score.success_reward,
+      rateLimitPenalty: config.health_score.rate_limit_penalty,
+      failurePenalty: config.health_score.failure_penalty,
+      recoveryRatePerHour: config.health_score.recovery_rate_per_hour,
+      minUsable: config.health_score.min_usable,
+      maxScore: config.health_score.max_score,
+    });
+  }
+
+  // Initialize token tracker for hybrid strategy
+  if (config.token_bucket) {
+    initTokenTracker({
+      maxTokens: config.token_bucket.max_tokens,
+      regenerationRatePerMinute: config.token_bucket.regeneration_rate_per_minute,
+      initialTokens: config.token_bucket.initial_tokens,
+    });
+  }
   
   // Initialize disk signature cache if keep_thinking is enabled
   // This integrates with the in-memory cacheSignature/getCachedSignature functions
@@ -749,11 +773,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
       const accountManager = await AccountManager.loadFromDisk(auth);
       if (accountManager.getAccountCount() > 0) {
-        try {
-          await accountManager.saveToDisk();
-        } catch (error) {
-          log.error("Failed to persist initial account pool", { error: String(error) });
-        }
+        accountManager.requestSaveToDisk();
       }
 
       // Initialize proactive token refresh queue (ported from LLM-API-Key-Proxy)
@@ -792,10 +812,6 @@ export const createAntigravityPlugin = (providerId: string) => async (
       return {
         apiKey: "",
         async fetch(input, init) {
-          // If the request is for the *other* provider, we might still want to intercept if URL matches
-          // But strict compliance means we only handle requests if the auth provider matches.
-          // Since loader is instantiated per provider, we are good.
-
           if (!isGenerativeLanguageRequest(input)) {
             return fetch(input, init);
           }
@@ -949,11 +965,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               accountManager.markToastShown(account.index);
             }
 
-            try {
-              await accountManager.saveToDisk();
-            } catch (error) {
-              log.error("Failed to persist rotation state", { error: String(error) });
-            }
+            accountManager.requestSaveToDisk();
 
             let authRecord = accountManager.toAuthDetails(account);
 
@@ -962,6 +974,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 const refreshed = await refreshAccessToken(authRecord, client, providerId);
                 if (!refreshed) {
                   const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
+                  getHealthTracker().recordFailure(account.index);
                   lastError = new Error("Antigravity token refresh failed");
                   if (shouldCooldown) {
                     accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
@@ -1010,6 +1023,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 }
 
                 const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
+                getHealthTracker().recordFailure(account.index);
                 lastError = error instanceof Error ? error : new Error(String(error));
                 if (shouldCooldown) {
                   accountManager.markAccountCoolingDown(account, cooldownMs, "auth-failure");
@@ -1035,6 +1049,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
               resetAccountFailureState(account.index);
             } catch (error) {
               const { failures, shouldCooldown, cooldownMs } = trackAccountFailure(account.index);
+              getHealthTracker().recordFailure(account.index);
               lastError = error instanceof Error ? error : new Error(String(error));
               if (shouldCooldown) {
                 accountManager.markAccountCoolingDown(account, cooldownMs, "project-error");
@@ -1159,6 +1174,9 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Flag to force thinking recovery on retry after API error
             let forceThinkingRecovery = false;
             
+            // Track if token was consumed (for hybrid strategy refund on error)
+            let tokenConsumed = false;
+            
             for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
               const currentEndpoint = ANTIGRAVITY_ENDPOINT_FALLBACKS[i];
 
@@ -1173,6 +1191,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   forceThinkingRecovery,
                   {
                     claudeToolHardening: config.claude_tool_hardening,
+                    googleSearch: config.web_search ? {
+                      mode: config.web_search.default_mode,
+                      threshold: config.web_search.grounding_threshold
+                    } : undefined,
                   },
                 );
 
@@ -1197,6 +1219,12 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 await runThinkingWarmup(prepared, projectContext.effectiveProjectId);
 
+                // Consume token for hybrid strategy
+                // Refunded later if request fails (429 or network error)
+                if (config.account_selection_strategy === 'hybrid') {
+                  tokenConsumed = getTokenTracker().consume(account.index);
+                }
+
                 const response = await fetch(prepared.request, prepared.init);
                 pushDebug(`status=${response.status} ${response.statusText}`);
 
@@ -1205,19 +1233,26 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 // Handle 429 rate limit with improved logic
                 if (response.status === 429) {
+                  // Refund token on rate limit
+                  if (tokenConsumed) {
+                    getTokenTracker().refund(account.index);
+                    tokenConsumed = false;
+                  }
+
                   const headerRetryMs = retryAfterMsFromResponse(response);
                   const bodyInfo = await extractRetryInfoFromBody(response);
                   const serverRetryMs = bodyInfo.retryDelayMs ?? headerRetryMs;
                   const quotaKey = headerStyleToQuotaKey(headerStyle, family);
                   const { attempt, delayMs, isDuplicate } = getRateLimitBackoff(account.index, quotaKey, serverRetryMs);
 
-                  const waitTimeFormatted = formatWaitTime(delayMs);
-                  const isCapacityExhausted =
-                    bodyInfo.reason === "MODEL_CAPACITY_EXHAUSTED" ||
-                    (typeof bodyInfo.message === "string" && bodyInfo.message.toLowerCase().includes("no capacity"));
+                  const rateLimitReason = parseRateLimitReason(bodyInfo.reason, bodyInfo.message);
+                  const smartBackoffMs = calculateBackoffMs(rateLimitReason, account.consecutiveFailures ?? 0, serverRetryMs);
+                  const effectiveDelayMs = Math.max(delayMs, smartBackoffMs);
+                  
+                  const isCapacityExhausted = rateLimitReason === "MODEL_CAPACITY_EXHAUSTED";
 
                   pushDebug(
-                    `429 idx=${account.index} email=${account.email ?? ""} family=${family} delayMs=${delayMs} attempt=${attempt}`,
+                    `429 idx=${account.index} email=${account.email ?? ""} family=${family} delayMs=${effectiveDelayMs} attempt=${attempt} reason=${rateLimitReason}`,
                   );
                   if (bodyInfo.message) {
                     pushDebug(`429 message=${bodyInfo.message}`);
@@ -1234,22 +1269,24 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     account.email,
                     family,
                     response.status,
-                    delayMs,
+                    effectiveDelayMs,
                     bodyInfo,
                   );
 
                   await logResponseBody(debugContext, response, 429);
 
+                  getHealthTracker().recordRateLimit(account.index);
+
                   if (isCapacityExhausted) {
-                    const failures = account.consecutiveFailures ?? 0;
-                    const capacityBackoffMs = getCapacityBackoffDelay(failures);
-                    account.consecutiveFailures = failures + 1;
+                    const capacityBackoffMs = calculateBackoffMs(rateLimitReason, account.consecutiveFailures ?? 0, serverRetryMs);
+                    accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
                     
                     const backoffFormatted = formatWaitTime(capacityBackoffMs);
-                    pushDebug(`capacity exhausted on account ${account.index}, backoff=${capacityBackoffMs}ms (failure #${failures + 1})`);
+                    const failures = account.consecutiveFailures ?? 0;
+                    pushDebug(`capacity exhausted on account ${account.index}, backoff=${capacityBackoffMs}ms (failure #${failures})`);
 
                     await showToast(
-                      `⏳ Server at capacity. Waiting ${backoffFormatted}... (attempt ${failures + 1})`,
+                      `Server at capacity. Waiting ${backoffFormatted}... (attempt ${failures})`,
                       "warning",
                     );
                     await sleep(capacityBackoffMs, abortSignal);
@@ -1258,27 +1295,21 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   
                   const accountLabel = account.email || `Account ${account.index + 1}`;
 
-                  // Progressive retry: 1st 429 → 1s then switch (if enabled) or retry same
                   if (attempt === 1) {
                     await showToast(`Rate limited. Quick retry in 1s...`, "warning");
                     await sleep(FIRST_RETRY_DELAY_MS, abortSignal);
                     
                     if (config.switch_on_first_rate_limit && accountCount > 1) {
-                      accountManager.markRateLimited(account, delayMs, family, headerStyle, model);
+                      accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
                       shouldSwitchAccount = true;
                       break;
                     }
                     continue;
                   }
 
-                  // Mark this header style as rate-limited for this account
-                  accountManager.markRateLimited(account, delayMs, family, headerStyle, model);
+                  accountManager.markRateLimitedWithReason(account, family, headerStyle, model, rateLimitReason, serverRetryMs);
 
-                  try {
-                    await accountManager.saveToDisk();
-                  } catch (error) {
-                    log.error("Failed to persist rate-limit state", { error: String(error) });
-                  }
+                  accountManager.requestSaveToDisk();
 
                   // For Gemini, try prioritized Antigravity across ALL accounts first
                   if (family === "gemini") {
@@ -1395,6 +1426,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 // Success or non-retryable error - return the response
                 if (response.ok) {
                   account.consecutiveFailures = 0;
+                  getHealthTracker().recordSuccess(account.index);
                 }
                 logAntigravityDebugResponse(debugContext, response, {
                   note: response.ok ? "Success" : `Error ${response.status}`,
@@ -1494,6 +1526,12 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 return transformedResponse;
               } catch (error) {
+                // Refund token on network/API error (only if consumed)
+                if (tokenConsumed) {
+                  getTokenTracker().refund(account.index);
+                  tokenConsumed = false;
+                }
+
                 // Handle recoverable thinking errors - retry with forced recovery
                 if (error instanceof Error && error.message === "THINKING_RECOVERY_NEEDED") {
                   // Only retry once with forced recovery to avoid infinite loops

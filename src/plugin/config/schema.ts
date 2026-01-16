@@ -14,9 +14,9 @@ import { z } from "zod";
 /**
  * Account selection strategy for distributing requests across accounts.
  * 
- * - `sticky` (default): Use same account until rate-limited. Preserves prompt cache.
+ * - `sticky`: Use same account until rate-limited. Preserves prompt cache.
  * - `round-robin`: Rotate to next account on every request. Maximum throughput.
- * - `hybrid`: Touch all fresh accounts first to sync reset timers, then sticky.
+ * - `hybrid` (default): Deterministic selection based on health score + token bucket + LRU freshness.
  */
 export const AccountSelectionStrategySchema = z.enum(['sticky', 'round-robin', 'hybrid']);
 export type AccountSelectionStrategy = z.infer<typeof AccountSelectionStrategySchema>;
@@ -236,9 +236,9 @@ export const AntigravityConfigSchema = z.object({
   /**
    * Strategy for selecting accounts when making requests.
    * Env override: OPENCODE_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY
-   * @default "sticky"
+   * @default "hybrid"
    */
-  account_selection_strategy: AccountSelectionStrategySchema.default('sticky'),
+  account_selection_strategy: AccountSelectionStrategySchema.default('hybrid'),
   
   /**
    * Enable PID-based account offset for multi-session distribution.
@@ -263,6 +263,30 @@ export const AntigravityConfigSchema = z.object({
    switch_on_first_rate_limit: z.boolean().default(true),
    
    // =========================================================================
+   // Health Score (used by hybrid strategy)
+   // =========================================================================
+   
+   health_score: z.object({
+     initial: z.number().min(0).max(100).default(70),
+     success_reward: z.number().min(0).max(10).default(1),
+     rate_limit_penalty: z.number().min(-50).max(0).default(-10),
+     failure_penalty: z.number().min(-100).max(0).default(-20),
+     recovery_rate_per_hour: z.number().min(0).max(20).default(2),
+     min_usable: z.number().min(0).max(100).default(50),
+     max_score: z.number().min(50).max(100).default(100),
+   }).optional(),
+   
+   // =========================================================================
+   // Token Bucket (for hybrid strategy)
+   // =========================================================================
+   
+   token_bucket: z.object({
+     max_tokens: z.number().min(1).max(1000).default(50),
+     regeneration_rate_per_minute: z.number().min(0.1).max(60).default(6),
+     initial_tokens: z.number().min(1).max(1000).default(50),
+   }).optional(),
+   
+   // =========================================================================
    // Auto-Update
   // =========================================================================
   
@@ -271,6 +295,28 @@ export const AntigravityConfigSchema = z.object({
    * @default true
    */
   auto_update: z.boolean().default(true),
+
+  // =========================================================================
+  // Web Search (Gemini Grounding)
+  // =========================================================================
+
+  web_search: z.object({
+    /**
+     * Default mode for web search when not specified by variant.
+     * - `auto`: Model decides when to search (dynamic retrieval).
+     * - `off`: Search is disabled by default.
+     * @default "off"
+     */
+    default_mode: z.enum(['auto', 'off']).default('off'),
+
+    /**
+     * Dynamic retrieval threshold (0.0 to 1.0).
+     * Higher values make the model search LESS often (requires higher confidence to trigger search).
+     * Only applies in 'auto' mode.
+     * @default 0.3
+     */
+    grounding_threshold: z.number().min(0).max(1).default(0.3),
+  }).optional(),
 });
 
 export type AntigravityConfig = z.infer<typeof AntigravityConfigSchema>;
@@ -295,14 +341,32 @@ export const DEFAULT_CONFIG: AntigravityConfig = {
   proactive_refresh_check_interval_seconds: 300,
   max_rate_limit_wait_seconds: 300,
   quota_fallback: false,
-  account_selection_strategy: 'sticky',
-pid_offset_enabled: false,
-   switch_on_first_rate_limit: true,
-   auto_update: true,
+  account_selection_strategy: 'hybrid',
+  pid_offset_enabled: false,
+  switch_on_first_rate_limit: true,
+  auto_update: true,
   signature_cache: {
     enabled: true,
     memory_ttl_seconds: 3600,
     disk_ttl_seconds: 172800,
     write_interval_seconds: 60,
+  },
+  health_score: {
+    initial: 70,
+    success_reward: 1,
+    rate_limit_penalty: -10,
+    failure_penalty: -20,
+    recovery_rate_per_hour: 2,
+    min_usable: 50,
+    max_score: 100,
+  },
+  token_bucket: {
+    max_tokens: 50,
+    regeneration_rate_per_minute: 6,
+    initial_tokens: 50,
+  },
+  web_search: {
+    default_mode: 'off',
+    grounding_threshold: 0.3,
   },
 };

@@ -1,9 +1,12 @@
-import { KEEP_THINKING_BLOCKS } from "../constants.js";
+import { getKeepThinking } from "./config";
 import { createLogger } from "./logger";
 import {
   EMPTY_SCHEMA_PLACEHOLDER_NAME,
   EMPTY_SCHEMA_PLACEHOLDER_DESCRIPTION,
+  SKIP_THOUGHT_SIGNATURE,
 } from "../constants";
+import { processImageData } from "./image-saver";
+import type { GoogleSearchConfig } from "./transform/types";
 
 const log = createLogger("request-helpers");
 
@@ -783,6 +786,8 @@ export interface VariantThinkingConfig {
   thinkingBudget?: number;
   /** Whether to include thoughts in output */
   includeThoughts?: boolean;
+  /** Google Search configuration */
+  googleSearch?: GoogleSearchConfig;
 }
 
 /**
@@ -802,23 +807,32 @@ export function extractVariantThinkingConfig(
   const google = providerOptions.google as Record<string, unknown> | undefined;
   if (!google) return undefined;
 
-  // Gemini 3 native format: { google: { thinkingLevel: "high", includeThoughts: true } }
-  if (typeof google.thinkingLevel === "string") {
-    return {
-      thinkingLevel: google.thinkingLevel,
-      includeThoughts: typeof google.includeThoughts === "boolean" ? google.includeThoughts : undefined,
-    };
-  }
+  const result: VariantThinkingConfig = {};
 
-  // Budget-based format (Claude/Gemini 2.5): { google: { thinkingConfig: { thinkingBudget } } }
-  if (google.thinkingConfig && typeof google.thinkingConfig === "object") {
+  // Gemini 3 native format: { google: { thinkingLevel: "high", includeThoughts: true } }
+  // thinkingLevel takes priority over thinkingBudget - they are mutually exclusive
+  if (typeof google.thinkingLevel === "string") {
+    result.thinkingLevel = google.thinkingLevel;
+    result.includeThoughts = typeof google.includeThoughts === "boolean" ? google.includeThoughts : undefined;
+  } else if (google.thinkingConfig && typeof google.thinkingConfig === "object") {
+    // Budget-based format (Claude/Gemini 2.5): { google: { thinkingConfig: { thinkingBudget } } }
+    // Only used when thinkingLevel is not present
     const tc = google.thinkingConfig as Record<string, unknown>;
     if (typeof tc.thinkingBudget === "number") {
-      return { thinkingBudget: tc.thinkingBudget };
+      result.thinkingBudget = tc.thinkingBudget;
     }
   }
 
-  return undefined;
+  // Extract Google Search config
+  if (google.googleSearch && typeof google.googleSearch === "object") {
+    const search = google.googleSearch as Record<string, unknown>;
+    result.googleSearch = {
+      mode: search.mode === 'auto' || search.mode === 'off' ? search.mode : undefined,
+      threshold: typeof search.threshold === 'number' ? search.threshold : undefined,
+    };
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 /**
@@ -1088,8 +1102,8 @@ function filterContentArray(
   isLastAssistantMessage: boolean = false,
 ): any[] {
   // For Claude models, strip thinking blocks by default for reliability
-  // User can opt-in to keep thinking via OPENCODE_ANTIGRAVITY_KEEP_THINKING=1
-  if (isClaudeModel && !KEEP_THINKING_BLOCKS) {
+  // User can opt-in to keep thinking via config: { "keep_thinking": true }
+  if (isClaudeModel && !getKeepThinking()) {
     return stripAllThinkingBlocks(contentArray);
   }
 
@@ -1114,11 +1128,26 @@ function filterContentArray(
       continue;
     }
 
-    // CRITICAL: For the LAST assistant message, thinking blocks MUST remain byte-for-byte
-    // identical to what the API returned. Anthropic rejects any modification.
-    // Pass through unchanged - do NOT sanitize or reconstruct.
+    // For the LAST assistant message with thinking blocks:
+    // - If signature is valid (length >= 50), pass through unchanged
+    // - If signature is invalid/missing, inject sentinel to bypass validation
     if (isLastAssistantMessage && (isThinking || hasSignature)) {
-      filtered.push(item);
+      const existingSignature = item.signature || item.thoughtSignature;
+      const hasValidSignature = typeof existingSignature === "string" && existingSignature.length >= 50;
+      
+      if (hasValidSignature) {
+        filtered.push(item);
+      } else {
+        // Invalid or missing signature - inject sentinel
+        const thinkingText = getThinkingText(item) || "";
+        log.debug("Injecting sentinel signature for invalid last-message thinking block");
+        const sentinelPart = {
+          type: item.type || "thinking",
+          thinking: thinkingText,
+          signature: SKIP_THOUGHT_SIGNATURE,
+        };
+        filtered.push(sentinelPart);
+      }
       continue;
     }
 
@@ -1357,6 +1386,17 @@ function transformGeminiCandidate(candidate: any): any {
           args: parsedArgs,
         },
       };
+    }
+
+    // Handle image data (inlineData) - save to disk and return file path
+    if (part.inlineData) {
+      const result = processImageData({
+        mimeType: part.inlineData.mimeType,
+        data: part.inlineData.data,
+      });
+      if (result) {
+        return { text: result };
+      }
     }
 
     return part;
@@ -2187,7 +2227,7 @@ export function fixClaudeToolPairing(messages: any[]): any[] {
     if (msg.role === "assistant" && Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === "tool_use" && block.id) {
-          toolUseMap.set(block.id, { name: block.name || "unknown", msgIndex: i });
+          toolUseMap.set(block.id, { name: block.name || `tool-${toolUseMap.size}`, msgIndex: i });
         }
       }
     }
