@@ -43,7 +43,7 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
    }
    ```
 
-   > Want bleeding edge features? Use `opencode-antigravity-auth@beta` instead.
+   > Want bleeding-edge features? Use `opencode-antigravity-auth@beta` instead.
 
 2. **Login** with your Google account:
 

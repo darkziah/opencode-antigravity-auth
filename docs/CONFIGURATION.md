@@ -65,7 +65,7 @@ When `keep_thinking` is enabled, the plugin caches thinking block signatures to 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `proactive_token_refresh` | `true` | Refresh tokens before expiry |
-| `proactive_refresh_buffer_seconds` | `1800` | Refresh 30min before expiry |
+| `proactive_refresh_buffer_seconds` | `1800` | Refresh 30 min before expiry |
 | `max_rate_limit_wait_seconds` | `300` | Max wait time when rate limited (0=unlimited) |
 | `quota_fallback` | `false` | **Gemini only.** When rate-limited on primary quota pool, try alternate pool before switching accounts. See [Dual Quota Pools](MULTI-ACCOUNT.md#dual-quota-pools). |
 | `switch_on_first_rate_limit` | `true` | Switch account immediately on first 429 (after 1s) |
@@ -85,7 +85,7 @@ When `keep_thinking` is enabled, the plugin caches thinking block signatures to 
 |----------|----------|----------|
 | `sticky` | Same account until rate-limited | Prompt cache preservation |
 | `round-robin` | Rotate to next account on every request | Maximum throughput |
-| `hybrid` | Touch all fresh accounts first, then sticky | Sync reset timers + cache |
+| `hybrid` | Deterministic selection based on health score + token bucket + LRU | Best overall distribution |
 
 ### Error Handling
 

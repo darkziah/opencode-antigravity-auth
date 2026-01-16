@@ -20,8 +20,7 @@ import type { RequestPayload, ThinkingConfig, ThinkingTier, GoogleSearchConfig }
  * 
  * @param schema - A JSON Schema object or primitive value
  * @returns Gemini-compatible schema
- */
-/**
+ * 
  * Fields that Gemini API rejects and must be removed from schemas.
  * Antigravity uses strict protobuf-backed JSON validation.
  */

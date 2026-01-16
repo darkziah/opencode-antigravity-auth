@@ -140,6 +140,6 @@ Configure in `antigravity.json`:
 |----------|----------|----------|
 | `sticky` | Same account until rate-limited | Prompt cache preservation |
 | `round-robin` | Rotate to next account on every request | Maximum throughput |
-| `hybrid` | Touch all fresh accounts first, then sticky | Sync reset timers + cache |
+| `hybrid` | Deterministic selection based on health score + token bucket + LRU | Best overall distribution |
 
 See [Configuration](CONFIGURATION.md#account-selection) for more details.

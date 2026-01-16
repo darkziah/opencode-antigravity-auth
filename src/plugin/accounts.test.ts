@@ -770,7 +770,7 @@ describe("AccountManager", () => {
       });
     });
 
-    describe("priority-queue strategy", () => {
+    describe("hybrid strategy with token bucket", () => {
       it("returns account based on health and token availability", () => {
         const stored: AccountStorageV3 = {
           version: 3,
@@ -784,7 +784,7 @@ describe("AccountManager", () => {
 
         const manager = new AccountManager(undefined, stored);
 
-        const first = manager.getCurrentOrNextForFamily("claude", null, "priority-queue");
+        const first = manager.getCurrentOrNextForFamily("claude", null, "hybrid");
         expect(first).not.toBeNull();
         expect([0, 1, 2]).toContain(first?.index);
       });
@@ -803,7 +803,7 @@ describe("AccountManager", () => {
         const accounts = manager.getAccounts();
         manager.markRateLimited(accounts[0]!, 60000, "claude");
 
-        const selected = manager.getCurrentOrNextForFamily("claude", null, "priority-queue");
+        const selected = manager.getCurrentOrNextForFamily("claude", null, "hybrid");
         expect(selected?.index).toBe(1);
       });
 
@@ -821,7 +821,7 @@ describe("AccountManager", () => {
         const accounts = manager.getAccounts();
         manager.markAccountCoolingDown(accounts[0]!, 60000, "auth-failure");
 
-        const selected = manager.getCurrentOrNextForFamily("claude", null, "priority-queue");
+        const selected = manager.getCurrentOrNextForFamily("claude", null, "hybrid");
         expect(selected?.index).toBe(1);
       });
 
@@ -839,7 +839,7 @@ describe("AccountManager", () => {
 
         const manager = new AccountManager(undefined, stored);
 
-        const selected = manager.getCurrentOrNextForFamily("claude", null, "priority-queue");
+        const selected = manager.getCurrentOrNextForFamily("claude", null, "hybrid");
         expect(selected?.index).toBe(0);
       });
 
@@ -857,7 +857,7 @@ describe("AccountManager", () => {
         };
 
         const manager = new AccountManager(undefined, stored);
-        const selected = manager.getCurrentOrNextForFamily("claude", null, "priority-queue");
+        const selected = manager.getCurrentOrNextForFamily("claude", null, "hybrid");
 
         expect(selected).not.toBeNull();
         expect(selected!.lastUsed).toBe(5000);

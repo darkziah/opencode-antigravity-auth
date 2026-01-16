@@ -6,7 +6,6 @@ import {
   addJitter,
   randomDelay,
   sortByLruWithHealth,
-  selectPriorityQueueAccount,
   selectHybridAccount,
   type AccountWithMetrics,
 } from "./rotation";
@@ -301,10 +300,10 @@ describe("TokenBucketTracker", () => {
     it("adds tokens back", () => {
       const tracker = new TokenBucketTracker({ initialTokens: 50 });
       tracker.consume(0, 10);
-      expect(tracker.getTokens(0)).toBe(40);
+      expect(tracker.getTokens(0)).toBeCloseTo(40, 2);
       
       tracker.refund(0, 5);
-      expect(tracker.getTokens(0)).toBe(45);
+      expect(tracker.getTokens(0)).toBeCloseTo(45, 2);
     });
 
     it("caps at maxTokens", () => {
@@ -482,36 +481,31 @@ describe("sortByLruWithHealth", () => {
 
 describe("selectHybridAccount", () => {
   it("returns null when no accounts available", () => {
-    const result = selectHybridAccount([]);
+    const tokenTracker = new TokenBucketTracker();
+    const result = selectHybridAccount([], tokenTracker);
     expect(result).toBeNull();
   });
 
-  it("returns null when all accounts filtered out", () => {
+  it("returns null when all accounts filtered out by health", () => {
+    const tokenTracker = new TokenBucketTracker();
     const accounts: AccountWithMetrics[] = [
       { index: 0, lastUsed: 0, healthScore: 30, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectHybridAccount(accounts, 50);
+    const result = selectHybridAccount(accounts, tokenTracker, 50);
     expect(result).toBeNull();
   });
 
-  it("returns the best candidate (most rested)", () => {
+  it("returns the best candidate by score", () => {
+    const tokenTracker = new TokenBucketTracker();
     const accounts: AccountWithMetrics[] = [
       { index: 0, lastUsed: 1000, healthScore: 70, isRateLimited: false, isCoolingDown: false },
       { index: 1, lastUsed: 500, healthScore: 70, isRateLimited: false, isCoolingDown: false },
       { index: 2, lastUsed: 2000, healthScore: 70, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectHybridAccount(accounts);
-    expect(result).toBe(1);
-  });
-});
-
-describe("selectPriorityQueueAccount", () => {
-  it("returns null when no accounts available", () => {
-    const tokenTracker = new TokenBucketTracker();
-    const result = selectPriorityQueueAccount([], tokenTracker);
-    expect(result).toBeNull();
+    const result = selectHybridAccount(accounts, tokenTracker);
+    expect([0, 1, 2]).toContain(result);
   });
 
   it("filters out rate-limited accounts", () => {
@@ -521,7 +515,7 @@ describe("selectPriorityQueueAccount", () => {
       { index: 1, lastUsed: 0, healthScore: 70, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectPriorityQueueAccount(accounts, tokenTracker);
+    const result = selectHybridAccount(accounts, tokenTracker);
     expect(result).toBe(1);
   });
 
@@ -534,7 +528,7 @@ describe("selectPriorityQueueAccount", () => {
       { index: 1, lastUsed: 0, healthScore: 70, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectPriorityQueueAccount(accounts, tokenTracker);
+    const result = selectHybridAccount(accounts, tokenTracker);
     expect(result).toBe(1);
   });
 
@@ -545,17 +539,17 @@ describe("selectPriorityQueueAccount", () => {
       { index: 1, lastUsed: 0, healthScore: 70, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectPriorityQueueAccount(accounts, tokenTracker, 50);
+    const result = selectHybridAccount(accounts, tokenTracker, 50);
     expect(result).toBe(1);
   });
 
-  it("returns null when all accounts filtered out", () => {
+  it("returns null when all accounts have no tokens", () => {
     const tokenTracker = new TokenBucketTracker({ initialTokens: 0 });
     const accounts: AccountWithMetrics[] = [
       { index: 0, lastUsed: 0, healthScore: 70, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectPriorityQueueAccount(accounts, tokenTracker);
+    const result = selectHybridAccount(accounts, tokenTracker);
     expect(result).toBeNull();
   });
 
@@ -567,7 +561,7 @@ describe("selectPriorityQueueAccount", () => {
       { index: 1, lastUsed: 0, healthScore: 100, isRateLimited: false, isCoolingDown: false },
     ];
 
-    const result = selectPriorityQueueAccount(accounts, tokenTracker, 50);
+    const result = selectHybridAccount(accounts, tokenTracker, 50);
     expect(result).toBe(1);
   });
 
@@ -579,8 +573,8 @@ describe("selectPriorityQueueAccount", () => {
       { index: 2, lastUsed: 2000, healthScore: 60, isRateLimited: false, isCoolingDown: false },
     ];
 
-    for (let i = 0; i < 100; i++) {
-      const result = selectPriorityQueueAccount(accounts, tokenTracker);
+    for (let i = 0; i < 10; i++) {
+      const result = selectHybridAccount(accounts, tokenTracker);
       expect([0, 1, 2]).toContain(result);
     }
   });

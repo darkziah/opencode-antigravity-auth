@@ -230,26 +230,61 @@ export function sortByLruWithHealth(
 
 /**
  * Select account using hybrid strategy:
- * 1. Filter available accounts (not rate-limited, not cooling down, healthy)
- * 2. Sort by LRU with health score tiebreaker
- * 3. Return the best candidate (most rested + healthiest)
+ * 1. Filter available accounts (not rate-limited, not cooling down, healthy, has tokens)
+ * 2. Calculate priority score: health (2x) + tokens (5x) + freshness (0.1x)
+ * 3. Sort by score descending
+ * 4. Return the best candidate (deterministic - highest score)
  * 
  * @param accounts - All accounts with their metrics
+ * @param tokenTracker - Token bucket tracker for token balances
  * @param minHealthScore - Minimum health score to be considered
  * @returns Best account index, or null if none available
  */
 export function selectHybridAccount(
   accounts: AccountWithMetrics[],
+  tokenTracker: TokenBucketTracker,
   minHealthScore: number = 50,
 ): number | null {
-  const sorted = sortByLruWithHealth(accounts, minHealthScore);
-  
-  if (sorted.length === 0) {
+  const candidates = accounts
+    .filter(acc => 
+      !acc.isRateLimited && 
+      !acc.isCoolingDown && 
+      acc.healthScore >= minHealthScore &&
+      tokenTracker.hasTokens(acc.index)
+    )
+    .map(acc => ({
+      ...acc,
+      tokens: tokenTracker.getTokens(acc.index)
+    }));
+
+  if (candidates.length === 0) {
     return null;
   }
 
-  // Return the best candidate (first in sorted list)
-  return sorted[0]?.index ?? null;
+  const maxTokens = tokenTracker.getMaxTokens();
+  const scored = candidates
+    .map(acc => ({
+      index: acc.index,
+      score: calculateHybridScore(acc, maxTokens)
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.index ?? null;
+}
+
+interface AccountWithTokens extends AccountWithMetrics {
+  tokens: number;
+}
+
+function calculateHybridScore(
+  account: AccountWithTokens,
+  maxTokens: number
+): number {
+  const healthComponent = account.healthScore * 2; // 0-200
+  const tokenComponent = (account.tokens / maxTokens) * 100 * 5; // 0-500
+  const secondsSinceUsed = (Date.now() - account.lastUsed) / 1000;
+  const freshnessComponent = Math.min(secondsSinceUsed, 3600) * 0.1; // 0-360
+  return Math.max(0, healthComponent + tokenComponent + freshnessComponent);
 }
 
 // ============================================================================
@@ -346,111 +381,6 @@ export class TokenBucketTracker {
   getMaxTokens(): number {
     return this.config.maxTokens;
   }
-}
-
-// ============================================================================
-// WEIGHTED RANDOM SELECTION
-// ============================================================================
-
-export interface WeightedAccountCandidate extends AccountWithMetrics {
-  tokens: number;
-}
-
-/**
- * Calculate priority score for an account.
- * Higher is better.
- * 
- * Formula: (HealthScore * 2) + (Tokens * 5) - (SecondsSinceUsed * 0.1)
- * Note: We prefer RECENTLY used accounts slightly less (LRU-ish), but prioritize
- * health and token availability much more heavily.
- */
-function calculatePriorityScore(
-  account: WeightedAccountCandidate,
-  maxTokens: number
-): number {
-  const healthComponent = account.healthScore * 2; // 0-200
-  const tokenComponent = (account.tokens / maxTokens) * 100 * 5; // 0-500
-  
-  // LRU Component: Small penalty for very recently used accounts to encourage spreading
-  // but much smaller than LRU strategy.
-  const secondsSinceUsed = (Date.now() - account.lastUsed) / 1000;
-  // Cap the "freshness" bonus at 1 hour
-  const freshnessComponent = Math.min(secondsSinceUsed, 3600) * 0.1;
-
-  return Math.max(0, healthComponent + tokenComponent + freshnessComponent);
-}
-
-/**
- * Select account using Weighted Random strategy (Priority Queue):
- * 
- * 1. Filter usable accounts (healthy, tokens available)
- * 2. Calculate priority score for each
- * 3. Sort by score descending
- * 4. Take top 30% candidates
- * 5. Weighted random selection from top candidates
- * 
- * @param accounts - Candidates with metrics
- * @param tokenTracker - Tracker for token balances
- * @param minHealthScore - Minimum health score
- * @returns Selected account index or null
- */
-export function selectPriorityQueueAccount(
-  accounts: AccountWithMetrics[],
-  tokenTracker: TokenBucketTracker,
-  minHealthScore: number = 50
-): number | null {
-  // 1. Filter and attach tokens
-  const candidates: WeightedAccountCandidate[] = accounts
-    .filter(acc => 
-      !acc.isRateLimited && 
-      !acc.isCoolingDown && 
-      acc.healthScore >= minHealthScore &&
-      tokenTracker.hasTokens(acc.index)
-    )
-    .map(acc => ({
-      ...acc,
-      tokens: tokenTracker.getTokens(acc.index)
-    }));
-
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  // 2. Calculate scores
-  const maxTokens = tokenTracker.getMaxTokens();
-  const scored = candidates.map(acc => ({
-    acc,
-    score: calculatePriorityScore(acc, maxTokens)
-  })).sort((a, b) => b.score - a.score);
-
-  // 3. Top 30% (min 1, max 5)
-  const topCount = Math.min(5, Math.max(1, Math.ceil(scored.length * 0.3)));
-  const topCandidates = scored.slice(0, topCount);
-
-  // 4. Weighted Random Selection
-  // Weights: #1=40%, #2=30%, #3=20%, etc roughly
-  // Simple approach: score is the weight
-  const totalScore = topCandidates.reduce((sum, item) => sum + item.score, 0);
-
-  // Edge case: If all scores are zero or negative, fall back to first candidate
-  // This shouldn't happen in practice since calculatePriorityScore() returns
-  // positive values (health: 0-200, tokens: 0-500, freshness: 0-360), but
-  // we handle it defensively to avoid infinite loops or undefined behavior.
-  if (totalScore <= 0) {
-    return topCandidates[0]!.acc.index;
-  }
-
-  let randomValue = Math.random() * totalScore;
-  
-  for (const item of topCandidates) {
-    randomValue -= item.score;
-    if (randomValue <= 0) {
-      return item.acc.index;
-    }
-  }
-
-  // Fallback to top score (topCandidates is guaranteed non-empty at this point)
-  return topCandidates[0]!.acc.index;
 }
 
 // ============================================================================

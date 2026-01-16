@@ -16,10 +16,9 @@ import { z } from "zod";
  * 
  * - `sticky`: Use same account until rate-limited. Preserves prompt cache.
  * - `round-robin`: Rotate to next account on every request. Maximum throughput.
- * - `hybrid` (default): LRU (Least Recently Used) selection with health score tiebreaker; balances cache locality and account health.
- * - `priority-queue`: Weighted random selection based on health score + token bucket + LRU.
+ * - `hybrid` (default): Deterministic selection based on health score + token bucket + LRU freshness.
  */
-export const AccountSelectionStrategySchema = z.enum(['sticky', 'round-robin', 'hybrid', 'priority-queue']);
+export const AccountSelectionStrategySchema = z.enum(['sticky', 'round-robin', 'hybrid']);
 export type AccountSelectionStrategy = z.infer<typeof AccountSelectionStrategySchema>;
 
 /**
@@ -264,7 +263,7 @@ export const AntigravityConfigSchema = z.object({
    switch_on_first_rate_limit: z.boolean().default(true),
    
    // =========================================================================
-   // Health Score (used by hybrid and priority-queue strategies)
+   // Health Score (used by hybrid strategy)
    // =========================================================================
    
    health_score: z.object({
@@ -278,7 +277,7 @@ export const AntigravityConfigSchema = z.object({
    }).optional(),
    
    // =========================================================================
-   // Token Bucket (for priority-queue strategy)
+   // Token Bucket (for hybrid strategy)
    // =========================================================================
    
    token_bucket: z.object({

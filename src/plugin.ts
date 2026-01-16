@@ -677,7 +677,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
     });
   }
 
-  // Initialize token tracker for priority-queue strategy
+  // Initialize token tracker for hybrid strategy
   if (config.token_bucket) {
     initTokenTracker({
       maxTokens: config.token_bucket.max_tokens,
@@ -1174,7 +1174,7 @@ export const createAntigravityPlugin = (providerId: string) => async (
             // Flag to force thinking recovery on retry after API error
             let forceThinkingRecovery = false;
             
-            // Track if token was consumed (for priority-queue refund on error)
+            // Track if token was consumed (for hybrid strategy refund on error)
             let tokenConsumed = false;
             
             for (let i = 0; i < ANTIGRAVITY_ENDPOINT_FALLBACKS.length; i++) {
@@ -1219,11 +1219,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 await runThinkingWarmup(prepared, projectContext.effectiveProjectId);
 
-                // Consume token for priority-queue strategy
+                // Consume token for hybrid strategy
                 // Refunded later if request fails (429 or network error)
-                if (config.account_selection_strategy === 'priority-queue') {
-                  getTokenTracker().consume(account.index);
-                  tokenConsumed = true;
+                if (config.account_selection_strategy === 'hybrid') {
+                  tokenConsumed = getTokenTracker().consume(account.index);
                 }
 
                 const response = await fetch(prepared.request, prepared.init);
@@ -1249,7 +1248,6 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   const rateLimitReason = parseRateLimitReason(bodyInfo.reason, bodyInfo.message);
                   const smartBackoffMs = calculateBackoffMs(rateLimitReason, account.consecutiveFailures ?? 0, serverRetryMs);
                   const effectiveDelayMs = Math.max(delayMs, smartBackoffMs);
-                  const waitTimeFormatted = formatWaitTime(effectiveDelayMs);
                   
                   const isCapacityExhausted = rateLimitReason === "MODEL_CAPACITY_EXHAUSTED";
 
