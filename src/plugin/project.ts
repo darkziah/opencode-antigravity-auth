@@ -42,20 +42,6 @@ interface OnboardUserPayload {
   };
 }
 
-class ProjectIdRequiredError extends Error {
-  /**
-   * Error raised when a required Google Cloud project is missing during Antigravity onboarding.
-   */
-  constructor() {
-    super(
-      "Google Antigravity requires a Google Cloud project. Enable the Antigravity API on a project you control, rerun `opencode auth login`, and supply that project ID when prompted.",
-    );
-  }
-}
-
-/**
- * Builds metadata headers required by the Code Assist API.
- */
 function buildMetadata(projectId?: string): Record<string, string> {
   const metadata: Record<string, string> = {
     ideType: CODE_ASSIST_METADATA.ideType,
@@ -193,13 +179,6 @@ export async function onboardManagedProject(
     metadata,
   };
 
-  if (tierId !== "FREE") {
-    if (!projectId) {
-      throw new ProjectIdRequiredError();
-    }
-    requestBody.cloudaicompanionProject = projectId;
-  }
-
   for (const baseEndpoint of ANTIGRAVITY_ENDPOINT_FALLBACKS) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
@@ -288,6 +267,26 @@ export async function ensureProjectContext(auth: OAuthAuthDetails): Promise<Proj
     if (resolvedManagedProjectId) {
       return persistManagedProject(resolvedManagedProjectId);
     }
+
+    // No managed project found - try to auto-provision one via onboarding.
+    // This handles accounts that were added before managed project provisioning was required.
+    const tierId = getDefaultTierId(loadPayload?.allowedTiers) ?? "FREE";
+    log.debug("Auto-provisioning managed project", { tierId, projectId: parts.projectId });
+    
+    const provisionedProjectId = await onboardManagedProject(
+      accessToken,
+      tierId,
+      parts.projectId,
+    );
+
+    if (provisionedProjectId) {
+      log.debug("Successfully provisioned managed project", { provisionedProjectId });
+      return persistManagedProject(provisionedProjectId);
+    }
+
+    log.warn("Failed to provision managed project - account may not work correctly", {
+      hasProjectId: !!parts.projectId,
+    });
 
     if (parts.projectId) {
       return { auth, effectiveProjectId: parts.projectId };

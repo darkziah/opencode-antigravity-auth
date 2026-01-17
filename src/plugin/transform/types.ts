@@ -80,6 +80,14 @@ export interface ThinkingConfig {
 }
 
 /**
+ * Google Search Grounding configuration.
+ */
+export interface GoogleSearchConfig {
+  mode?: 'auto' | 'off';
+  threshold?: number;
+}
+
+/**
  * Model resolution result with tier information.
  */
 export interface ResolvedModel {
@@ -93,10 +101,14 @@ export interface ResolvedModel {
   tier?: ThinkingTier;
   /** Whether this is a thinking-capable model */
   isThinkingModel?: boolean;
+  /** Whether this is an image generation model */
+  isImageModel?: boolean;
   /** Quota preference based on :antigravity or :gemini-cli suffix */
   quotaPreference?: HeaderStyle;
   /** Whether user explicitly specified quota via suffix (vs default selection) */
   explicitQuota?: boolean;
   /** Source of thinking config: "variant" (providerOptions) or "tier" (model suffix) */
   configSource?: "variant" | "tier";
+  /** Google Search configuration from variant or global config */
+  googleSearch?: GoogleSearchConfig;
 }

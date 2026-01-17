@@ -6,6 +6,7 @@ import {
   GEMINI_CLI_ENDPOINT,
   EMPTY_SCHEMA_PLACEHOLDER_NAME,
   EMPTY_SCHEMA_PLACEHOLDER_DESCRIPTION,
+  SKIP_THOUGHT_SIGNATURE,
   type HeaderStyle,
 } from "../constants";
 import { cacheSignature, getCachedSignature } from "./cache";
@@ -54,13 +55,16 @@ import {
   needsThinkingRecovery,
 } from "./thinking-recovery";
 import { sanitizeCrossModelPayloadInPlace } from "./transform/cross-model-sanitizer";
-import { isGemini3Model } from "./transform";
+import { isGemini3Model, isImageGenerationModel, buildImageGenerationConfig, applyGeminiTransforms } from "./transform";
 import {
   resolveModelWithTier,
   resolveModelWithVariant,
+  resolveModelForHeaderStyle,
   isClaudeModel,
   isClaudeThinkingModel,
   CLAUDE_THINKING_MAX_OUTPUT_TOKENS,
+  type GoogleSearchConfig,
+  type ThinkingTier,
 } from "./transform";
 import { detectErrorType } from "./recovery";
 
@@ -520,7 +524,17 @@ function ensureThinkingBeforeToolUseInMessages(messages: any[], signatureSession
 
     const lastThinking = defaultSignatureStore.get(signatureSessionKey);
     if (!lastThinking) {
-      return message;
+      // No cached signature available - use sentinel to bypass validation
+      // This handles cache miss scenarios (restart, session mismatch, expiry)
+      const existingThinking = thinkingBlocks[0];
+      const thinkingText = existingThinking?.thinking || existingThinking?.text || "";
+      log.debug("Injecting sentinel signature (cache miss)", { signatureSessionKey });
+      const sentinelBlock = {
+        type: "thinking",
+        thinking: thinkingText,
+        signature: SKIP_THOUGHT_SIGNATURE,
+      };
+      return { ...message, content: [sentinelBlock, ...otherBlocks] };
     }
 
     const injected = {
@@ -564,6 +578,8 @@ export function isGenerativeLanguageRequest(input: RequestInfo): input is string
 export interface PrepareRequestOptions {
   /** Enable Claude tool hardening (parameter signatures + system instruction). Default: true */
   claudeToolHardening?: boolean;
+  /** Google Search configuration (global default) */
+  googleSearch?: GoogleSearchConfig;
 }
 
 export function prepareAntigravityRequest(
@@ -626,8 +642,7 @@ export function prepareAntigravityRequest(
   const [, rawModel = "", rawAction = ""] = match;
   const requestedModel = rawModel;
 
-  // Use model resolver for tier-based thinking configuration
-  const resolved = resolveModelWithTier(rawModel);
+  const resolved = resolveModelForHeaderStyle(rawModel, headerStyle);
   const effectiveModel = resolved.actualModel;
 
   const streaming = rawAction === STREAM_ACTION;
@@ -768,16 +783,52 @@ export function prepareAntigravityRequest(
         }
 
         // Resolve thinking configuration based on user settings and model capabilities
-        const userThinkingConfig = extractThinkingConfig(requestPayload, rawGenerationConfig, extraBody);
+        // Image generation models don't support thinking - skip thinking config entirely
+        const isImageModel = isImageGenerationModel(effectiveModel);
+        const userThinkingConfig = isImageModel ? undefined : extractThinkingConfig(requestPayload, rawGenerationConfig, extraBody);
         const hasAssistantHistory = Array.isArray(requestPayload.contents) &&
           requestPayload.contents.some((c: any) => c?.role === "model" || c?.role === "assistant");
 
         // For claude-sonnet-4-5 (without -thinking suffix), ignore client's thinkingConfig
         // Only claude-sonnet-4-5-thinking-* variants should have thinking enabled
         const isClaudeSonnetNonThinking = effectiveModel.toLowerCase() === "claude-sonnet-4-5";
-        const effectiveUserThinkingConfig = isClaudeSonnetNonThinking ? undefined : userThinkingConfig;
+        const effectiveUserThinkingConfig = (isClaudeSonnetNonThinking || isImageModel) ? undefined : userThinkingConfig;
 
-        const finalThinkingConfig = resolveThinkingConfig(
+        // For image models, add imageConfig instead of thinkingConfig
+        if (isImageModel) {
+          const imageConfig = buildImageGenerationConfig();
+          const generationConfig = (rawGenerationConfig ?? {}) as Record<string, unknown>;
+          generationConfig.imageConfig = imageConfig;
+          // Remove any thinkingConfig that might have been set
+          delete generationConfig.thinkingConfig;
+          // Set reasonable defaults for image generation
+          if (!generationConfig.candidateCount) {
+            generationConfig.candidateCount = 1;
+          }
+          requestPayload.generationConfig = generationConfig;
+          
+          // Add safety settings for image generation (permissive to allow creative content)
+          if (!requestPayload.safetySettings) {
+            requestPayload.safetySettings = [
+              { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+              { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+              { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+              { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" },
+              { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_ONLY_HIGH" },
+            ];
+          }
+          
+          // Image models don't support tools - remove them entirely
+          delete requestPayload.tools;
+          delete requestPayload.toolConfig;
+          
+          // Replace system instruction with a simple image generation prompt
+          // Image models should not receive agentic coding assistant instructions
+          requestPayload.systemInstruction = {
+            parts: [{ text: "You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request." }]
+          };
+        } else {
+          const finalThinkingConfig = resolveThinkingConfig(
           effectiveUserThinkingConfig,
           isClaudeSonnetNonThinking ? false : (resolved.isThinkingModel ?? isThinkingCapableModel(effectiveModel)),
           isClaude,
@@ -841,6 +892,7 @@ export function prepareAntigravityRequest(
           delete rawGenerationConfig.thinkingConfig;
           requestPayload.generationConfig = rawGenerationConfig;
         }
+        } // End of else block for non-image models
 
         // Clean up thinking fields from extra_body
         if (extraBody) {
@@ -1047,108 +1099,21 @@ export function prepareAntigravityRequest(
             }
             requestPayload.tools = finalTools.concat(passthroughTools);
           } else {
-            // Default normalization for non-Claude models (Gemini)
-            // First, flatten any functionDeclarations format into individual tools
-            const flattenedTools: any[] = [];
-            requestPayload.tools.forEach((tool: any) => {
-              if (Array.isArray(tool.functionDeclarations) && tool.functionDeclarations.length > 0) {
-                // Flatten functionDeclarations into individual tool entries
-                tool.functionDeclarations.forEach((decl: any) => {
-                  flattenedTools.push({
-                    name: decl.name,
-                    description: decl.description,
-                    // Convert parameters to input_schema for Gemini format
-                    input_schema: decl.parameters || decl.parametersJsonSchema || decl.input_schema || decl.inputSchema,
-                  });
-                });
-              } else {
-                flattenedTools.push(tool);
-              }
+            // Gemini-specific tool normalization and feature injection
+            // Resolve Google Search config: Variant takes precedence over global default
+            const effectiveSearchConfig: GoogleSearchConfig | undefined = 
+              variantConfig?.googleSearch ?? options?.googleSearch;
+              
+            const geminiResult = applyGeminiTransforms(requestPayload, {
+              model: effectiveModel,
+              normalizedThinking: undefined, // Thinking config already applied above (lines 816-880)
+              tierThinkingBudget,
+              tierThinkingLevel: tierThinkingLevel as ThinkingTier | undefined,
+              googleSearch: effectiveSearchConfig,
             });
-
-            requestPayload.tools = flattenedTools.map((tool: any, toolIndex: number) => {
-              const newTool = { ...tool };
-
-              const schemaCandidates = [
-                newTool.function?.input_schema,
-                newTool.function?.parameters,
-                newTool.function?.inputSchema,
-                newTool.custom?.input_schema,
-                newTool.custom?.parameters,
-                newTool.input_schema,
-                newTool.parameters,
-                newTool.inputSchema,
-              ].filter(Boolean);
-
-              const placeholderSchema = {
-                type: "object",
-                properties: {
-                  [EMPTY_SCHEMA_PLACEHOLDER_NAME]: {
-                    type: "boolean",
-                    description: EMPTY_SCHEMA_PLACEHOLDER_DESCRIPTION,
-                  },
-                },
-                required: [EMPTY_SCHEMA_PLACEHOLDER_NAME],
-                additionalProperties: false,
-              };
-
-              let schema: any = schemaCandidates[0];
-              const schemaObjectOk = schema && typeof schema === "object" && !Array.isArray(schema);
-              if (!schemaObjectOk) {
-                schema = placeholderSchema;
-                toolDebugMissing += 1;
-              }
-
-              const nameCandidate =
-                newTool.name ||
-                newTool.function?.name ||
-                newTool.custom?.name ||
-                `tool-${toolIndex}`;
-
-              if (newTool.function && !newTool.function.input_schema && schema) {
-                newTool.function.input_schema = schema;
-              }
-              if (newTool.custom && !newTool.custom.input_schema && schema) {
-                newTool.custom.input_schema = schema;
-              }
-              if (!newTool.custom && newTool.function) {
-                newTool.custom = {
-                  name: newTool.function.name || nameCandidate,
-                  description: newTool.function.description,
-                  input_schema: schema,
-                };
-              }
-              if (!newTool.custom && !newTool.function) {
-                newTool.custom = {
-                  name: nameCandidate,
-                  description: newTool.description,
-                  input_schema: schema,
-                };
-
-                if (!newTool.parameters && !newTool.input_schema && !newTool.inputSchema) {
-                  newTool.parameters = schema;
-                }
-              }
-              if (newTool.custom && !newTool.custom.input_schema) {
-                newTool.custom.input_schema = schema;
-                toolDebugMissing += 1;
-              }
-
-              toolDebugSummaries.push(
-                `idx=${toolIndex}, hasCustom=${!!newTool.custom}, customSchema=${!!newTool.custom?.input_schema}, hasFunction=${!!newTool.function}, functionSchema=${!!newTool.function?.input_schema}`,
-              );
-
-              return newTool;
-            });
-
-            // Gemini 3 API requires: [{functionDeclarations: [{name, description, parameters}, ...]}]
-            const normalizedTools = requestPayload.tools as any[];
-            const geminiDeclarations = normalizedTools.map((tool: any) => ({
-              name: tool.name || tool.function?.name,
-              description: tool.description || tool.function?.description,
-              parameters: tool.parameters || tool.input_schema || tool.function?.parameters || tool.function?.input_schema,
-            }));
-            requestPayload.tools = [{ functionDeclarations: geminiDeclarations }];
+            
+            toolDebugMissing = geminiResult.toolDebugMissing;
+            toolDebugSummaries.push(...geminiResult.toolDebugSummaries);
           }
 
           try {
