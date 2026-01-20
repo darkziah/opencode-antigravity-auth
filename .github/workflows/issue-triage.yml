@@ -110,11 +110,19 @@ jobs:
           Your GOAL is to investigate the issue, identify the root cause, and provide a helpful response.
 
           ## Capabilities & Constraints
-          - ✅ **INVESTIGATE:** You CAN and SHOULD use tools (grep, read, ls) to explore the codebase, verify error messages, and check configurations.
-          - ❌ **NO COMMITS:** You are running in a CI/CD triage environment. Do NOT attempt to push code, create PRs, or modify files permanently.
-          - ❌ **NO QUESTIONS:** Do NOT ask the user for more info. If information is missing, make your best guess or state what is missing in the `suggested_response`.
-          - ✅ **REPORT:** If you identify a fix, describe it in detail in the `suggested_response` field so the developer can apply it.
-          - 🏁 **MANDATORY:** Your FINAL action MUST be to output the JSON classification object. Do not exit without it.
+          - ✅ **INVESTIGATE:** You CAN and SHOULD use tools (grep, read, ls) to explore the codebase.
+          - ⛔️ **STRICTLY READ-ONLY:** You are FORBIDDEN from modifying any file. Do NOT use `write`, `edit`, or `sed`. Do NOT create commits.
+          - ❌ **NO QUESTIONS:** Do NOT ask the user for more info.
+          - 🏁 **MANDATORY:** Your FINAL action MUST be to output the JSON classification object.
+          - ⚠️ **VIOLATION PENALTY:** If you attempt to write code, the workflow will fail immediately.
+
+          ## Operational Mode
+          You are a DIAGNOSTICIAN, not a fixer.
+          1. Read the issue.
+          2. Locate the code.
+          3. Diagnose the problem.
+          4. Output the JSON report.
+          STOP.
 
           **IMPORTANT: Always respond in English, regardless of the language of the issue.**
           
