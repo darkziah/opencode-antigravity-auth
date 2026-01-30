@@ -71,7 +71,7 @@ export const GEMINI_CLI_ENDPOINT = ANTIGRAVITY_ENDPOINT_PROD;
 export const ANTIGRAVITY_DEFAULT_PROJECT_ID = "rising-fact-p41fc";
 
 export const ANTIGRAVITY_HEADERS = {
-  "User-Agent": "antigravity/1.15.8 darwin/arm64",
+  "User-Agent": "antigravity/1.200.0 darwin/arm64",
   "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
   "Client-Metadata": '{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}',
 } as const;
@@ -81,14 +81,6 @@ export const GEMINI_CLI_HEADERS = {
   "X-Goog-Api-Client": "gl-node/22.18.0",
   "Client-Metadata": "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI",
 } as const;
-
-const ANTIGRAVITY_USER_AGENTS = [
-  "antigravity/1.15.8 windows/amd64",
-  "antigravity/1.15.8 darwin/arm64",
-  "antigravity/1.15.8 linux/amd64",
-  "antigravity/1.15.8 darwin/amd64",
-  "antigravity/1.15.8 linux/arm64",
-] as const;
 
 const ANTIGRAVITY_API_CLIENTS = [
   "google-cloud-sdk vscode_cloudshelleditor/0.1",
@@ -114,6 +106,16 @@ function randomFrom<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
+const DEFAULT_ANTIGRAVITY_VERSION = "1.200.0";
+
+/**
+ * Get the Antigravity UA version from env or default.
+ * Env: OPENCODE_ANTIGRAVITY_UA_VERSION
+ */
+export function getAntigravityVersion(): string {
+  return process.env.OPENCODE_ANTIGRAVITY_UA_VERSION ?? DEFAULT_ANTIGRAVITY_VERSION;
+}
+
 export type HeaderSet = {
   "User-Agent": string;
   "X-Goog-Api-Client": string;
@@ -128,8 +130,12 @@ export function getRandomizedHeaders(style: HeaderStyle): HeaderSet {
       "Client-Metadata": GEMINI_CLI_HEADERS["Client-Metadata"],
     };
   }
+
+  const version = getAntigravityVersion();
+  const platforms = ["windows/amd64", "darwin/arm64", "linux/amd64", "darwin/amd64", "linux/arm64"] as const;
+
   return {
-    "User-Agent": randomFrom(ANTIGRAVITY_USER_AGENTS),
+    "User-Agent": `antigravity/${version} ${randomFrom(platforms)}`,
     "X-Goog-Api-Client": randomFrom(ANTIGRAVITY_API_CLIENTS),
     "Client-Metadata": ANTIGRAVITY_HEADERS["Client-Metadata"],
   };
